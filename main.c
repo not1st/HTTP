@@ -158,14 +158,9 @@ void accept_request(int client)
 void execute_cgi(int client, const char *path, const char *method, const char *query_string)
 {
     char buf[1024];
-    int cgi_output[2];
-    int cgi_input[2];
-    pid_t pid;
-    int status;
-    int i;
+    int cgi_output[2], cgi_input[2];
+    int i, pid, numchars = 1, content_length = -1;
     char c;
-    int numchars = 1;
-    int content_length = -1;
 
     buf[0] = 'A';
     buf[1] = '\0';
@@ -193,23 +188,30 @@ void execute_cgi(int client, const char *path, const char *method, const char *q
     // 响应头信息
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
     send(client, buf, strlen(buf), 0);
-    // 建立两条管道，用来读、写，并创建一个子进程
-    if (pipe(cgi_output) < 0 || pipe(cgi_input) < 0 || (pid = fork()) < 0)
+    // 建立两条管道，用来读、写
+    if (pipe(cgi_output) < 0 || pipe(cgi_input) < 0)
     {
         cannot_execute(client);
         return;
     }
-    // 0：子进程；+x：父进程
+    // 创建子进程执行cgi函数, 获取cgi的标准输出通过管道传给父进程, 由父进程发给客户端
+    if ((pid = fork()) < 0) {
+        cannot_execute(client);
+        return;
+    }
+
+    // 0：子进程执行cgi脚本
     if (pid == 0)
     {
         char meth_env[255];
         char query_env[255];
         char length_env[255];
-
+        // 标准输出重定向（1：STDOUT，0：STDIN）
         dup2(cgi_output[1], 1);
         dup2(cgi_input[0], 0);
-        close(cgi_output[0]);
-        close(cgi_input[1]);
+        close(cgi_output[0]);   // 关闭cgi_output读端
+        close(cgi_input[1]);    // 关闭cgi_input写端
+        // 添加到子进程的环境变量中
         sprintf(meth_env, "REQUEST_METHOD=%s", method);
         putenv(meth_env);
         if (strcasecmp(method, "GET") == 0)
@@ -217,30 +219,33 @@ void execute_cgi(int client, const char *path, const char *method, const char *q
             sprintf(query_env, "QUERY_STRING=%s", query_string);
             putenv(query_env);
         }
-        else
-        { /* POST */
+        else // POST
+        {
             sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
             putenv(length_env);
         }
+        // 执行cgi脚本
         execl(path, path, NULL);
         exit(0);
     }
-    else
-    { /* parent */
-        close(cgi_output[1]);
-        close(cgi_input[0]);
+    else    // 父进程
+    {
+        close(cgi_output[1]);   // 关闭cgi_output的写端
+        close(cgi_input[0]);    // 关闭cgi_input的读端
+        // 如果是POST方法, 继续读取写入到cgi_input管道, 子进程会从此管道读取
         if (strcasecmp(method, "POST") == 0)
             for (i = 0; i < content_length; i++)
             {
                 recv(client, &c, 1, 0);
                 write(cgi_input[1], &c, 1);
             }
+        // 从cgi_output管道中读取子进程的输出, 发送给客户端
         while (read(cgi_output[0], &c, 1) > 0)
             send(client, &c, 1, 0);
-
+        // 关闭管道
         close(cgi_output[0]);
         close(cgi_input[1]);
-        waitpid(pid, &status, 0);
+        waitpid(pid, NULL, 0);   // 等待子进程退出
     }
 }
 
