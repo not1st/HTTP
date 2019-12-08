@@ -70,8 +70,8 @@ void ssl_readcb(struct bufferevent *bev, void *arg)
 {
     struct evbuffer *in = bufferevent_get_input(bev);
 
-    printf("Received %zu bytes\n", evbuffer_get_length(in));
-    printf("----- data ----\n");
+    printf("DEBUG:Received %zu bytes\n", evbuffer_get_length(in));
+    printf("------ data -----\n");
     printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
 
     bufferevent_write_buffer(bev, in);

@@ -12,7 +12,10 @@
                 "/usr/include/",
                 "-L",
                 "/usr/lib/",
+                "-lssl",
+                "-lcrypto",
                 "-levent",
+                "-levent_openssl",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}"
             ],
