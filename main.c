@@ -138,7 +138,7 @@ char *find_http_header(struct evhttp_request *req, struct evkeyvalq *params, con
     {
         printf("====line:%d,It's not a good URI. Sending BADREQUEST\n", __LINE__);
         evhttp_send_error(req, HTTP_BADREQUEST, 0);
-        return;
+        return NULL;
     }
 
     //获取uri中的path部分
