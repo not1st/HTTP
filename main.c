@@ -1,25 +1,64 @@
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <pthread.h>
-#include <strings.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <stdio.h>
-#include <ctype.h>
+#include <stdlib.h>
+#include <evhttp.h>
+#include <event.h>
+#include <string.h>
+#include "event2/http.h"
+#include "event2/event.h"
+#include "event2/buffer.h"
+#include "event2/bufferevent.h"
+#include "event2/bufferevent_compat.h"
+#include "event2/http_struct.h"
+#include "event2/http_compat.h"
+#include "event2/util.h"
+#include "event2/listener.h"
 
-#define CLIENT_LIMIT 10
-#define WEB_PATH "www"
+#define BUF_MAX 1024 * 16
 
-int startup(int *);
-void accept_request(int);
-int get_line(int, char *, int);
-void unimplemented(int);
-void not_found(int);
 void error_die(const char *);
-void serve_file(int, const char *);
-void cannot_execute(int);
-void execute_cgi(int, const char *, const char *, const char *);
+void accept_request(struct evhttp_request *, void *);
+void handle_get_request(struct evhttp_request *, void *);
+void handle_post_request(struct evhttp_request *, void *);
+void handle_head_request(struct evhttp_request *, void *);
+void handle_put_request(struct evhttp_request *, void *);
+void handle_delete_request(struct evhttp_request *, void *);
+void handle_options_request(struct evhttp_request *, void *);
+void handle_trace_request(struct evhttp_request *, void *);
+void handle_connect_request(struct evhttp_request *, void *);
+void handle_patch_request(struct evhttp_request *, void *);
+void handle_unknown_request(struct evhttp_request *, void *);
+
+/* 处理GET请求 */
+void handle_get_request(struct evhttp_request *req, void *arg)
+{
+    if (req == NULL)
+    {
+        printf("get a null request");
+        return;
+    }
+    /* 分析URL参数 */
+    char *decode_uri = strdup((char*) evhttp_request_uri(req)); 
+    struct evkeyvalq http_query; 
+    // 解析错误
+    if(evhttp_parse_query(decode_uri, &http_query) == -1)
+    {
+        printf("evhttp_parse_query failed");
+        free(decode_uri);
+        return;
+    }
+    free(decode_uri);
+
+    // 初始化返回客户端的数据缓存
+    struct evbuffer *buf = evbuffer_new();
+    if (buf == NULL)
+    {
+        printf("reply buf is null.");
+        return;
+    }
+    evbuffer_add_printf(buf, "Receive get request,Thanks for the request!");
+    evhttp_send_reply(req, HTTP_OK, "Client", buf);
+    evbuffer_free(buf);
+}
 
 /* 程序异常终止 */
 void error_die(const char *sc)
@@ -28,349 +67,131 @@ void error_die(const char *sc)
     exit(1);
 }
 
-/* 初始化服务器配置并启动监听 */
-int startup(int *port)
-{
-    int httpd = 0, socket_len;
-    struct sockaddr_in server_addr;
-
-    // 初始化服务器信息
-    socket_len = sizeof(struct sockaddr_in);
-    memset(&server_addr, 0, socket_len);
-    server_addr.sin_family = AF_INET;         // 地址族
-    server_addr.sin_port = htons(*port);      // 端口号
-    server_addr.sin_addr.s_addr = INADDR_ANY; // IP地址
-    // bzero(&(server_addr.sin_zero), 8);
-
-    // 创建socket
-    httpd = socket(PF_INET, SOCK_STREAM, 0);
-    if (httpd == -1)
-        error_die("socket create failed");
-    // 绑定服务器信息
-    if (bind(httpd, (struct sockaddr *)&server_addr, socket_len) < 0)
-        error_die("bind failed");
-    // 动态端口
-    if (*port == 0)
-    {
-        if (getsockname(httpd, (struct sockaddr *)&server_addr, &socket_len) == -1)
-            error_die("getsockname failed");
-        *port = ntohs(server_addr.sin_port);
-    }
-    // 开始监听
-    if (listen(httpd, CLIENT_LIMIT) < 0)
-        error_die("listen failed");
-    return (httpd);
-}
-
 /* 处理HTTP请求 */
-void accept_request(int client)
+void accept_request(struct evhttp_request *req, void *arg)
 {
-    char buf[1024];
-    int cgi = 0, len, i, j;
-    char method[255];
-    char url[255];
-    char path[512];
-    char version[16];
-    struct stat st;
-    char *query_string = NULL;
-
-    // 获取请求行信息（请求方法、URL、HTTP版本）
-    len = get_line(client, buf, sizeof(buf));
-
-    // 获取请求方法（GET、POST、...）
-    for (i = 0; !isspace((int)(buf[i])) && (i < sizeof(method) - 1); i++)
+    // HTTP请求类型
+    switch (evhttp_request_get_command(req))
     {
-        method[i] = buf[i];
+    case EVHTTP_REQ_GET:
+        handle_get_request(req, arg);
+        break;
+    case EVHTTP_REQ_POST:
+        handle_post_request(req, arg);
+        break;
+    case EVHTTP_REQ_HEAD:
+        handle_head_request(req, arg);
+        break;
+    case EVHTTP_REQ_PUT:
+        handle_put_request(req, arg);
+        break;
+    case EVHTTP_REQ_DELETE:
+        handle_delete_request(req, arg);
+        break;
+    case EVHTTP_REQ_OPTIONS:
+        handle_options_request(req, arg);
+        break;
+    case EVHTTP_REQ_TRACE:
+        handle_trace_request(req, arg);
+        break;
+    case EVHTTP_REQ_CONNECT:
+        handle_connect_request(req, arg);
+        break;
+    case EVHTTP_REQ_PATCH:
+        handle_patch_request(req, arg);
+        break;
+    default:
+        handle_unknown_request(req, arg);
+        break;
     }
-    method[i] = '\0';
+}
 
-    // 非GET、POST方法
-    if (strcasecmp(method, "GET") && strcasecmp(method, "POST"))
+
+//解析http头，主要用于get请求时解析uri和请求参数
+char *find_http_header(struct evhttp_request *req, struct evkeyvalq *params, const char *query_char)
+{
+    if (req == NULL || params == NULL || query_char == NULL)
     {
-        unimplemented(client);
-        return;
+        printf("====line:%d,%s\n", __LINE__, "input params is null.");
+        return NULL;
     }
 
-    // 获取URL
-    for (i++, j = 0; !isspace((int)(buf[i])) && (j < sizeof(url) - 1); i++, j++)
-    {
-        url[j] = buf[i];
-    }
-    url[i] = '\0';
+    struct evhttp_uri *decoded = NULL;
+    char *query = NULL;
+    char *query_result = NULL;
+    const char *path;
+    const char *uri = evhttp_request_get_uri(req); //获取请求uri
 
-    // 获取HTTP版本
-    for (i++, j = 0; !isspace((int)(buf[i])) && (j < sizeof(version) - 1) && i < len; i++, j++)
+    if (uri == NULL)
     {
-        version[j] = buf[i];
-    }
-    version[i] = '\0';
-
-    // POST请求：开启CGI
-    if (strcasecmp(method, "POST") == 0)
-        cgi = 1;
-
-    // 处理GET请求
-    if (strcasecmp(method, "GET") == 0)
-    {
-        // 获取请求参数?key=value
-        query_string = url;
-        while ((*query_string != '?') && (*query_string != '\0'))
-            query_string++;
-        // 有参数
-        if (*query_string == '?')
-        {
-            cgi = 1;
-            // 截断并切割得到参数部分字符串
-            *query_string = '\0';
-            query_string++;
-        }
-    }
-    // 拼接网页文件路径
-    sprintf(path, "%s%s", WEB_PATH, url);
-    if (path[strlen(path) - 1] == '/')
-        strcat(path, "index.html");
-    // 获取文件
-    if (stat(path, &st) == -1)
-    {
-        // 文件未找到，丢弃所有头信息
-        while ((len > 0) && strcmp("\n", buf))
-            len = get_line(client, buf, sizeof(buf));
-        not_found(client);
+        printf("====line:%d,evhttp_request_get_uri return null\n", __LINE__);
+        return NULL;
     }
     else
     {
-        if (S_ISDIR(st.st_mode))
-            strcat(path, "/index.html");
-        // 文件所有者、用户组、其他用户有可执行权限
-        if ((st.st_mode & S_IXUSR) || (st.st_mode & S_IXGRP) || (st.st_mode & S_IXOTH))
-            cgi = 1;
-        // 不需要CGI程序处理
-        if (!cgi)
-            serve_file(client, path);
-        else
-            execute_cgi(client, path, method, query_string);
+        printf("====line:%d,Got a GET request for <%s>\n", __LINE__, uri);
     }
 
-    close(client);
-}
-
-/* 处理动态请求 */
-void execute_cgi(int client, const char *path, const char *method, const char *query_string)
-{
-    char buf[1024];
-    int cgi_output[2], cgi_input[2];
-    int i, pid, numchars = 1, content_length = -1;
-    char c;
-
-    buf[0] = 'A';
-    buf[1] = '\0';
-    if (strcasecmp(method, "GET") == 0)
-        while ((numchars > 0) && strcmp("\n", buf))
-            numchars = get_line(client, buf, sizeof(buf));
-    else // POST
+    //解码uri
+    decoded = evhttp_uri_parse(uri);
+    if (!decoded)
     {
-        numchars = get_line(client, buf, sizeof(buf));
-        while ((numchars > 0) && strcmp("\n", buf))
-        {
-            buf[15] = '\0';
-            // 获取 HTTP 消息传输长度
-            if (strcasecmp(buf, "Content-Length:") == 0)
-                content_length = atoi(&(buf[16]));
-            numchars = get_line(client, buf, sizeof(buf));
-        }
-        if (content_length == -1)
-        {
-            bad_request(client);
-            return;
-        }
-    }
-    
-    // 响应头信息
-    sprintf(buf, "HTTP/1.0 200 OK\r\n");
-    send(client, buf, strlen(buf), 0);
-    // 建立两条管道，用来读、写
-    if (pipe(cgi_output) < 0 || pipe(cgi_input) < 0)
-    {
-        cannot_execute(client);
-        return;
-    }
-    // 创建子进程执行cgi函数, 获取cgi的标准输出通过管道传给父进程, 由父进程发给客户端
-    if ((pid = fork()) < 0) {
-        cannot_execute(client);
+        printf("====line:%d,It's not a good URI. Sending BADREQUEST\n", __LINE__);
+        evhttp_send_error(req, HTTP_BADREQUEST, 0);
         return;
     }
 
-    // 0：子进程执行cgi脚本
-    if (pid == 0)
+    //获取uri中的path部分
+    path = evhttp_uri_get_path(decoded);
+    if (path == NULL)
     {
-        char meth_env[255];
-        char query_env[255];
-        char length_env[255];
-        // 标准输出重定向（1：STDOUT，0：STDIN）
-        dup2(cgi_output[1], 1);
-        dup2(cgi_input[0], 0);
-        close(cgi_output[0]);   // 关闭cgi_output读端
-        close(cgi_input[1]);    // 关闭cgi_input写端
-        // 添加到子进程的环境变量中
-        sprintf(meth_env, "REQUEST_METHOD=%s", method);
-        putenv(meth_env);
-        if (strcasecmp(method, "GET") == 0)
-        {
-            sprintf(query_env, "QUERY_STRING=%s", query_string);
-            putenv(query_env);
-        }
-        else // POST
-        {
-            sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
-            putenv(length_env);
-        }
-        // 执行cgi脚本
-        execl(path, path, NULL);
-        exit(0);
+        path = "/";
     }
-    else    // 父进程
-    {
-        close(cgi_output[1]);   // 关闭cgi_output的写端
-        close(cgi_input[0]);    // 关闭cgi_input的读端
-        // 如果是POST方法, 继续读取写入到cgi_input管道, 子进程会从此管道读取
-        if (strcasecmp(method, "POST") == 0)
-            for (i = 0; i < content_length; i++)
-            {
-                recv(client, &c, 1, 0);
-                write(cgi_input[1], &c, 1);
-            }
-        // 从cgi_output管道中读取子进程的输出, 发送给客户端
-        while (read(cgi_output[0], &c, 1) > 0)
-            send(client, &c, 1, 0);
-        // 关闭管道
-        close(cgi_output[0]);
-        close(cgi_input[1]);
-        waitpid(pid, NULL, 0);   // 等待子进程退出
-    }
-}
-
-/* 接收一行请求信息 */
-int get_line(int sock, char *buf, int size)
-{
-    int i = 0, n;
-    char c = '\0';
-
-    while ((i < size - 1) && (c != '\n'))
-    {
-        n = recv(sock, &c, 1, 0);
-        if (n > 0)
-        {
-            if (c == '\r')
-            {
-                n = recv(sock, &c, 1, MSG_PEEK);
-                if ((n > 0) && (c == '\n'))
-                    recv(sock, &c, 1, 0);
-                else
-                    c = '\n';
-            }
-            buf[i] = c;
-            i++;
-        }
-        else
-            c = '\n';
-    }
-    buf[i] = '\0';
-
-    return i;
-}
-
-/* 响应网页文件 */
-void serve_file(int client, const char *filename)
-{
-    FILE *resource = NULL;
-    int numchars = 1;
-    char buf[1024];
-    char headers[] = "HTTP/1.0 200 OK\r\n"
-                     "Content-Type: text/html\r\n\r\n";
-
-    buf[0] = 'A';
-    buf[1] = '\0';
-    while ((numchars > 0) && strcmp("\n", buf))
-        numchars = get_line(client, buf, sizeof(buf));
-
-    resource = fopen(filename, "r");
-    if (resource == NULL)
-        not_found(client);
     else
     {
-        // 返回头信息
-        send(client, headers, sizeof(headers), 0);
-        // 返回网页文件
-        fgets(buf, sizeof(buf), resource);
-        while (!feof(resource))
-        {
-            send(client, buf, strlen(buf), 0);
-            fgets(buf, sizeof(buf), resource);
-        }
+        printf("====line:%d,path is:%s\n", __LINE__, path);
     }
-    fclose(resource);
-}
 
-/* 501：未实现的功能 */
-void unimplemented(int client)
-{
-    char buf[] = "HTTP/1.0 501 Method Not Implemented\r\n"
-                 "Content-Type: text/html\r\n\r\n"
-                 "Method Not Implemented";
-    send(client, buf, strlen(buf), 0);
-}
-
-/* 404：文件未找到 */
-void not_found(int client)
-{
-    char buf[] = "HTTP/1.0 404 NOT FOUND\r\n"
-                 "Content-Type: text/html\r\n\r\n"
-                 "The resource specified is unavailable.\r\n";
-    send(client, buf, strlen(buf), 0);
-}
-
-/* 500：服务器执行错误 */
-void cannot_execute(int client)
-{
-    char buf[] = "HTTP/1.0 500 Internal Server Error\r\n"
-                 "Content-type: text/html\r\n\r\n"
-                 "Error prohibited CGI execution.\r\n";
-    send(client, buf, strlen(buf), 0);
-}
-
-/* 400：坏请求 */
-void bad_request(int client)
-{
-    char buf[] = "HTTP/1.0 400 BAD REQUEST\r\n"
-                 "Content-type: text/html\r\n\r\n"
-                 "Your browser sent a bad request";
-    send(client, buf, strlen(buf), 0);
-}
-
-int main(int argc, char *argv[])
-{
-    int server_fd = -1, client_fd = -1;
-    int port = 8000;
-    struct sockaddr_in client_addr;
-    int socket_len = sizeof(client_addr);
-    pthread_t new_thread;
-
-    // 初始化服务器并开始监听
-    server_fd = startup(&port);
-    printf("httpd running on port %d\n", port);
-
-    // 处理客户端连接
-    while (1)
+    //获取uri中的参数部分
+    query = (char *)evhttp_uri_get_query(decoded);
+    if (query == NULL)
     {
-        // 收到客户端连接
-        client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &socket_len);
-        if (client_fd == -1)
-            error_die("accept error");
-        // 创建新线程
-        if (pthread_create(&new_thread, NULL, accept_request, client_fd) != 0)
-            perror("pthread_create failed");
+        printf("====line:%d,evhttp_uri_get_query return null\n", __LINE__);
+        return NULL;
     }
 
-    colse(server_fd);
+    //查询指定参数的值
+    evhttp_parse_query_str(query, params);
+    query_result = (char *)evhttp_find_header(params, query_char);
+
+    return query_result;
+}
+
+int main()
+{
+    struct evhttp *http_server = NULL;
+    short http_port = 8000;
+    char *http_addr = "0.0.0.0";
+
+    // 初始化
+    event_init();
+    // 启动http服务端
+    http_server = evhttp_start(http_addr, http_port);
+    if (http_server == NULL)
+        error_die("http server start failed.");
+
+    // 设置请求超时时间(s)
+    evhttp_set_timeout(http_server, 5);
+    // 设置事件处理函数，evhttp_set_cb针对每一个事件(请求)注册一个处理函数，
+    // evhttp_set_cb(http_server, "/testpost", http_handler_testpost_msg, NULL);
+    // evhttp_set_gencb函数，是对所有请求设置一个统一的处理函数
+    evhttp_set_gencb(http_server, accept_request, NULL);
+
+    //循环监听
+    event_dispatch();
+
+    //实际上不会释放，代码不会运行到这一步
+    evhttp_free(http_server);
+
     return 0;
 }

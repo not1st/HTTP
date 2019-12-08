@@ -4,6 +4,8 @@
         "typeinfo": "c",
         "stdio.h": "c",
         "stat.h": "c",
-        "strings.h": "c"
+        "strings.h": "c",
+        "types.h": "c",
+        "string.h": "c"
     }
 }
