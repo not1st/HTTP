@@ -14,7 +14,8 @@ openssl version -a
 ```
 ./configure --prefix=/usr
 make
-# 如果出现 aclocal-1.16: 未找到命令
-autoreconf  -ivf
 sudo make install
 ```
+如果出现“aclocal-1.16: 未找到命令”错误，执行语句 `autoreconf  -ivf` 或 安装旧版本，再覆盖安装新版本。
+
+
