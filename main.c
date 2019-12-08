@@ -3,7 +3,14 @@
 #include <evhttp.h>
 #include <event.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 #include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/rand.h>
+
 #include "event2/http.h"
 #include "event2/event.h"
 #include "event2/buffer.h"
@@ -13,9 +20,16 @@
 #include "event2/http_compat.h"
 #include "event2/util.h"
 #include "event2/listener.h"
+#include "event2/bufferevent_ssl.h"
 
+#define SERVER_CRT "server.crt"
+#define SERVER_KEY "server.key"
 #define BUF_MAX 1024 * 16
+#define SERVER_PORT 8000
 
+SSL_CTX *evssl_init(void);
+void ssl_acceptcb(struct evconnlistener *, int, struct sockaddr *, int, void *);
+void ssl_readcb(struct bufferevent *, void *);
 void error_die(const char *);
 void accept_request(struct evhttp_request *, void *);
 void handle_get_request(struct evhttp_request *, void *);
@@ -28,6 +42,55 @@ void handle_trace_request(struct evhttp_request *, void *);
 void handle_connect_request(struct evhttp_request *, void *);
 void handle_patch_request(struct evhttp_request *, void *);
 void handle_unknown_request(struct evhttp_request *, void *);
+
+/* 初始化SSL */
+SSL_CTX *evssl_init(void)
+{
+    SSL_CTX *server_ctx;
+    SSL_load_error_strings();
+    SSL_library_init(); // 初始化OpenSSL库
+    if (!RAND_poll())
+        return NULL;
+    server_ctx = SSL_CTX_new(SSLv23_server_method());
+    if (!SSL_CTX_use_certificate_chain_file(server_ctx, SERVER_CRT) ||
+        !SSL_CTX_use_PrivateKey_file(server_ctx, SERVER_KEY, SSL_FILETYPE_PEM))
+    {
+        puts("Couldn't read 'server.key' or 'server.crt' file.  To generate a key\n"
+             "To generate a key and certificate, run:\n"
+             "  openssl genrsa -out server.key 2048\n"
+             "  openssl req -new -key server.key -out server.crt.req\n"
+             "  openssl x509 -req -days 365 -in server.crt.req -signkey server.key -out server.crt");
+        return NULL;
+    }
+    SSL_CTX_set_options(server_ctx, SSL_OP_NO_SSLv2);
+    return server_ctx;
+}
+
+void ssl_readcb(struct bufferevent *bev, void *arg)
+{
+    struct evbuffer *in = bufferevent_get_input(bev);
+
+    printf("Received %zu bytes\n", evbuffer_get_length(in));
+    printf("----- data ----\n");
+    printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
+
+    bufferevent_write_buffer(bev, in);
+}
+
+/*  */
+void ssl_acceptcb(struct evconnlistener *serv, int sock, struct sockaddr *sa, int sa_len, void *arg)
+{
+    struct event_base *evbase;
+    struct bufferevent *bev;
+    SSL_CTX *server_ctx;
+    SSL *client_ctx;
+    server_ctx = (SSL_CTX *)arg;
+    client_ctx = SSL_new(server_ctx);
+    evbase = evconnlistener_get_base(serv);
+    bev = bufferevent_openssl_socket_new(evbase, sock, client_ctx, BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_enable(bev, EV_READ);
+    bufferevent_setcb(bev, ssl_readcb, NULL, NULL, NULL);
+}
 
 /* 处理GET请求 */
 void handle_get_request(struct evhttp_request *req, void *arg)
@@ -201,29 +264,23 @@ char *find_http_header(struct evhttp_request *req, struct evkeyvalq *params, con
 
 int main()
 {
-    struct evhttp *http_server = NULL;
-    short http_port = 8000;
-    char *http_addr = "0.0.0.0";
-
-    // 初始化
-    event_init();
-    // 启动http服务端
-    http_server = evhttp_start(http_addr, http_port);
-    if (http_server == NULL)
-        error_die("http server start failed.");
-
-    // 设置请求超时时间(s)
-    evhttp_set_timeout(http_server, 5);
-    // 设置事件处理函数，evhttp_set_cb针对每一个事件(请求)注册一个处理函数，
-    // evhttp_set_cb(http_server, "/testpost", http_handler_testpost_msg, NULL);
-    // evhttp_set_gencb函数，是对所有请求设置一个统一的处理函数
-    evhttp_set_gencb(http_server, accept_request, NULL);
-
-    //循环监听
-    event_dispatch();
-
-    //实际上不会释放，代码不会运行到这一步
-    evhttp_free(http_server);
-
+    SSL_CTX *ctx;
+    struct evconnlistener *listener;
+    struct event_base *evbase;
+    struct sockaddr_in sin;
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(SERVER_PORT);
+    sin.sin_addr.s_addr = INADDR_ANY;
+    ctx = evssl_init();
+    if (ctx == NULL)
+        return 1;
+    evbase = event_base_new();
+    listener = evconnlistener_new_bind(evbase, ssl_acceptcb, (void *)ctx,
+                                       LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE,
+                                       1024, (struct sockaddr *)&sin, sizeof(sin));
+    event_base_loop(evbase, 0);
+    evconnlistener_free(listener);
+    SSL_CTX_free(ctx);
     return 0;
 }

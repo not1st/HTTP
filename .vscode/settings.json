@@ -6,6 +6,9 @@
         "stat.h": "c",
         "strings.h": "c",
         "types.h": "c",
-        "string.h": "c"
+        "string.h": "c",
+        "ssl.h": "c",
+        "event.h": "c",
+        "bufferevent_ssl.h": "c"
     }
 }
