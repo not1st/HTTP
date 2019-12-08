@@ -8,6 +8,11 @@
             "args": [
                 "-g",
                 "${file}",
+                "-I",
+                "/usr/include/",
+                "-L",
+                "/usr/lib/",
+                "-levent",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}"
             ],

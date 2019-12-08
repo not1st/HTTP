@@ -33,14 +33,13 @@ void handle_get_request(struct evhttp_request *req, void *arg)
 {
     if (req == NULL)
     {
-        printf("get a null request");
+        printf("get a null 'get' request");
         return;
     }
-    /* 分析URL参数 */
-    char *decode_uri = strdup((char*) evhttp_request_uri(req)); 
-    struct evkeyvalq http_query; 
-    // 解析错误
-    if(evhttp_parse_query(decode_uri, &http_query) == -1)
+    // 解析URL参数
+    char *decode_uri = strdup((char *)evhttp_request_uri(req));
+    struct evkeyvalq http_query;
+    if (evhttp_parse_query(decode_uri, &http_query) == -1)
     {
         printf("evhttp_parse_query failed");
         free(decode_uri);
@@ -59,6 +58,34 @@ void handle_get_request(struct evhttp_request *req, void *arg)
     evhttp_send_reply(req, HTTP_OK, "Client", buf);
     evbuffer_free(buf);
 }
+
+void handle_post_request(struct evhttp_request *req, void *arg)
+{
+    if (req == NULL)
+    {
+        printf("get a null 'post' request");
+        return;
+    }
+
+    // 初始化返回客户端的数据缓存
+    struct evbuffer *buf = evbuffer_new();
+    if (buf == NULL)
+    {
+        printf("reply buf is null.");
+        return;
+    }
+    evbuffer_add_printf(buf, "Receive post request,Thanks for the request!");
+    evhttp_send_reply(req, HTTP_OK, "Client", buf);
+    evbuffer_free(buf);
+}
+void handle_head_request(struct evhttp_request *req, void *arg) {}
+void handle_put_request(struct evhttp_request *req, void *arg) {}
+void handle_delete_request(struct evhttp_request *req, void *arg) {}
+void handle_options_request(struct evhttp_request *req, void *arg) {}
+void handle_trace_request(struct evhttp_request *req, void *arg) {}
+void handle_connect_request(struct evhttp_request *req, void *arg) {}
+void handle_patch_request(struct evhttp_request *req, void *arg) {}
+void handle_unknown_request(struct evhttp_request *req, void *arg) {}
 
 /* 程序异常终止 */
 void error_die(const char *sc)
@@ -105,7 +132,6 @@ void accept_request(struct evhttp_request *req, void *arg)
         break;
     }
 }
-
 
 //解析http头，主要用于get请求时解析uri和请求参数
 char *find_http_header(struct evhttp_request *req, struct evkeyvalq *params, const char *query_char)
