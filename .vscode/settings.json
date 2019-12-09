@@ -9,6 +9,7 @@
         "string.h": "c",
         "ssl.h": "c",
         "event.h": "c",
-        "bufferevent_ssl.h": "c"
+        "bufferevent_ssl.h": "c",
+        "type_traits": "cpp"
     }
 }

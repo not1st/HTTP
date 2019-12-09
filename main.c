@@ -7,6 +7,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -23,16 +25,18 @@
 #include "event2/listener.h"
 #include "event2/bufferevent_ssl.h"
 
+#define WEB_PATH "www"
 #define SERVER_CRT "server.crt"
 #define SERVER_KEY "server.key"
 #define HTTP_SERVER_PORT 8000
 #define HTTPS_SERVER_PORT 4430
+#define MAX_BUF_SIZE 1024
 
 SSL_CTX *evssl_init(void);
 void https_accept_request(struct evconnlistener *, int, struct sockaddr *, int, void *);
 void ssl_readcb(struct bufferevent *, void *);
-void error_die(const char *);
-void accept_request(struct evhttp_request *, void *);
+void http_accept_request(struct evhttp_request *, void *);
+char *get_content_type(char *);
 void http_startup(void);
 void https_startup(void);
 void handle_get_request(struct evhttp_request *, void *);
@@ -60,6 +64,7 @@ struct table_entry
     {"gif", "image/gif"},
     {"jpg", "image/jpeg"},
     {"jpeg", "image/jpeg"},
+    {"js", "text/javascript"},
     {"png", "image/png"},
     {"pdf", "application/pdf"},
     {"ps", "application/postscript"},
@@ -125,8 +130,8 @@ void handle_get_request(struct evhttp_request *req, void *arg)
         return;
     }
     // 解析URI参数
-    char *decode_uri = strdup((char *)evhttp_request_uri(req));
-    struct evkeyvalq http_query;
+    char *decode_uri = strdup((char *)evhttp_request_uri(req)); // get uri
+    struct evkeyvalq http_query;                                // get argument
     // 请求中包含 ..
     if (strstr(decode_uri, ".."))
     {
@@ -142,26 +147,80 @@ void handle_get_request(struct evhttp_request *req, void *arg)
         evhttp_send_error(req, HTTP_BADREQUEST, NULL);
         return;
     }
-    puts(decode_uri);
-    free(decode_uri);
 
-    // 初始化返回客户端的数据缓存
-    struct evbuffer *buf = evbuffer_new();
-    if (buf == NULL)
+    char path[512]; // 网页文件路径
+    sprintf(path, "%s%s", WEB_PATH, decode_uri);
+    if (path[strlen(path) - 1] == '/') // 默认找路径下的index.html
+        strcat(path, "index.html");
+
+    // path包含参数、需要截断
+
+    struct stat st, st_p;      // 获取文件
+    int cgi = 0, fd = -1;      // 处理cgi程序
+    if (stat(path, &st) == -1) // 请求文件不存在
     {
-        printf("reply buf is null.");
+        evhttp_send_error(req, HTTP_BADREQUEST, "Not Found"); // 文件未找到
+        free(decode_uri);
         return;
     }
-    evbuffer_add_printf(buf, "Receive get request,Thanks for the request!");
-    evhttp_send_reply(req, HTTP_OK, "Client", buf);
-    evbuffer_free(buf);
+    else
+    {
+        if (S_ISDIR(st.st_mode)) // 若rul是目录，自动添加index.html
+        {
+            strcat(path, "/index.html");
+            if (stat(path, &st_p) == -1)
+            {
+                evhttp_send_error(req, HTTP_NOTFOUND, NULL); // 文件未找到
+                free(decode_uri);
+                return;
+            }
+            st = st_p;
+        }
+        // 文件所有者、用户组、其他用户有可执行权限
+        if ((st.st_mode & S_IXUSR) || (st.st_mode & S_IXGRP) || (st.st_mode & S_IXOTH))
+            cgi = 1;
+        if (!cgi) // 不需要CGI程序处理
+        {
+            char *type = get_content_type(path);
+            if ((fd = open(path, O_RDONLY)) < 0 || fstat(fd, &st) < 0)
+            {
+                perror("open | fstat");
+                evhttp_send_error(req, HTTP_NOTFOUND, NULL); // 文档打开失败
+                close(fd);
+                free(decode_uri);
+                return;
+            }
+            // 添加响应头信息
+            evhttp_add_header(evhttp_request_get_output_headers(req), "Content-Type", type);
+            struct evbuffer *buf = NULL;    // 初始化返回客户端的数据缓存
+            ev_off_t offset = 0;
+            size_t bytes_left = 0, bytes_to_read = 0;
+            evhttp_send_reply_start(req, HTTP_OK, "OK");    // 分块传输
+            while (offset < st.st_size)
+            {
+                buf = evbuffer_new();
+                bytes_left = st.st_size - offset;
+                bytes_to_read = bytes_left > MAX_BUF_SIZE ? MAX_BUF_SIZE : bytes_left;
+                evbuffer_add_file(buf, fd, offset, bytes_to_read);
+                evhttp_send_reply_chunk(req, buf);
+                offset += bytes_to_read;
+                evbuffer_free(buf);
+            }
+            evhttp_send_reply_end(req); // 结束分块
+            colse(fd);
+        }
+        else // cgi
+            evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+    }
+    free(decode_uri);
 }
 
 void handle_post_request(struct evhttp_request *req, void *arg)
 {
     if (req == NULL)
     {
-        printf("get a null 'post' request");
+        puts("get a null 'post' request");
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
         return;
     }
 
@@ -189,23 +248,6 @@ void handle_trace_request(struct evhttp_request *req, void *arg) {}
 void handle_connect_request(struct evhttp_request *req, void *arg) {}
 void handle_patch_request(struct evhttp_request *req, void *arg) {}
 void handle_unknown_request(struct evhttp_request *req, void *arg) {}
-
-
-/* 404：文件未找到 */
-void not_found(struct evhttp_request *req)
-{
-    char buf[] = "HTTP/1.0 404 NOT FOUND\r\n"
-                 "Content-Type: text/html\r\n\r\n"
-                 "The resource specified is unavailable.\r\n";
-    send(client, buf, strlen(buf), 0);
-}
-
-/* 程序异常终止 */
-void error_die(const char *sc)
-{
-    perror(sc);
-    exit(1);
-}
 
 /* 处理HTTP请求 */
 void http_accept_request(struct evhttp_request *req, void *arg)
@@ -246,6 +288,20 @@ void http_accept_request(struct evhttp_request *req, void *arg)
     }
 }
 
+char *get_content_type(char *path)
+{
+    char *ext, *ret = strrchr(path, '.');
+    struct table_entry *ent;
+    if (!ret || strchr(ret, '/'))
+        return "application/misc";
+    ext = ret + 1;
+    for (ent = &content_type_table[0]; ent->extension; ++ent)
+    {
+        if (!evutil_ascii_strcasecmp(ent->extension, ext))
+            return ent->content_type;
+    }
+}
+
 /* 启动HTTP线程 */
 void http_startup(void)
 {
@@ -257,7 +313,10 @@ void http_startup(void)
     // 启动http服务端
     http_server = evhttp_start(http_addr, HTTP_SERVER_PORT);
     if (http_server == NULL)
-        error_die("http server start failed.");
+    {
+        perror("http server start failed.");
+        return;
+    }
     evhttp_set_gencb(http_server, http_accept_request, NULL); // 设置事件处理函数
     event_dispatch();                                         // 循环监听
     evhttp_free(http_server);                                 // 实际上不会释放，代码不会运行到这一步
@@ -356,6 +415,7 @@ int main()
         perror("http pthread_create failed");
     if (pthread_create(&thread_https, NULL, https_startup, NULL) != 0)
         perror("https pthread_create failed");
+    // 可加菜单
     while (1)
     {
     }
