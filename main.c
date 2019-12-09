@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -25,13 +26,16 @@
 #define SERVER_CRT "server.crt"
 #define SERVER_KEY "server.key"
 #define BUF_MAX 1024 * 16
-#define SERVER_PORT 8000
+#define HTTP_SERVER_PORT 8000
+#define HTTPS_SERVER_PORT 4430
 
 SSL_CTX *evssl_init(void);
-void ssl_acceptcb(struct evconnlistener *, int, struct sockaddr *, int, void *);
+void https_accept_request(struct evconnlistener *, int, struct sockaddr *, int, void *);
 void ssl_readcb(struct bufferevent *, void *);
 void error_die(const char *);
 void accept_request(struct evhttp_request *, void *);
+void http_startup(void);
+void https_startup(void);
 void handle_get_request(struct evhttp_request *, void *);
 void handle_post_request(struct evhttp_request *, void *);
 void handle_head_request(struct evhttp_request *, void *);
@@ -78,7 +82,7 @@ void ssl_readcb(struct bufferevent *bev, void *arg)
 }
 
 /*  */
-void ssl_acceptcb(struct evconnlistener *serv, int sock, struct sockaddr *sa, int sa_len, void *arg)
+void https_accept_request(struct evconnlistener *serv, int sock, struct sockaddr *sa, int sa_len, void *arg)
 {
     struct event_base *evbase;
     struct bufferevent *bev;
@@ -164,7 +168,7 @@ void error_die(const char *sc)
 }
 
 /* 处理HTTP请求 */
-void accept_request(struct evhttp_request *req, void *arg)
+void http_accept_request(struct evhttp_request *req, void * arg)
 {
     // HTTP请求类型
     switch (evhttp_request_get_command(req))
@@ -200,6 +204,48 @@ void accept_request(struct evhttp_request *req, void *arg)
         handle_unknown_request(req, arg);
         break;
     }
+}
+
+/* 启动HTTP线程 */
+void http_startup(void)
+{
+    struct evhttp *http_server = NULL;
+    char *http_addr = "0.0.0.0";
+
+    // 初始化
+    event_init();
+    // 启动http服务端
+    http_server = evhttp_start(http_addr, HTTP_SERVER_PORT);
+    if (http_server == NULL)
+        error_die("http server start failed.");
+    evhttp_set_gencb(http_server, http_accept_request, NULL);   // 设置事件处理函数
+    event_dispatch();   // 循环监听
+    evhttp_free(http_server);   // 实际上不会释放，代码不会运行到这一步
+    return;
+}
+
+/* 启动HTTPS线程 */
+void https_startup(void)
+{
+    SSL_CTX *ctx;
+    struct evconnlistener *listener;
+    struct event_base *evbase;
+    struct sockaddr_in sin;
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(HTTPS_SERVER_PORT);
+    sin.sin_addr.s_addr = INADDR_ANY;
+    ctx = evssl_init(); // 初始化ssl
+    if (ctx == NULL)
+        return;
+    evbase = event_base_new();  // 创建HTTPS线程的event_base
+    listener = evconnlistener_new_bind(evbase, https_accept_request, (void *)ctx,
+                                       LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE,
+                                       1024, (struct sockaddr *)&sin, sizeof(sin));
+    event_base_loop(evbase, 0);
+    evconnlistener_free(listener);
+    SSL_CTX_free(ctx);
+    return;
 }
 
 //解析http头，主要用于get请求时解析uri和请求参数
@@ -264,23 +310,12 @@ char *find_http_header(struct evhttp_request *req, struct evkeyvalq *params, con
 
 int main()
 {
-    SSL_CTX *ctx;
-    struct evconnlistener *listener;
-    struct event_base *evbase;
-    struct sockaddr_in sin;
-    memset(&sin, 0, sizeof(sin));
-    sin.sin_family = AF_INET;
-    sin.sin_port = htons(SERVER_PORT);
-    sin.sin_addr.s_addr = INADDR_ANY;
-    ctx = evssl_init();
-    if (ctx == NULL)
-        return 1;
-    evbase = event_base_new();
-    listener = evconnlistener_new_bind(evbase, ssl_acceptcb, (void *)ctx,
-                                       LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE,
-                                       1024, (struct sockaddr *)&sin, sizeof(sin));
-    event_base_loop(evbase, 0);
-    evconnlistener_free(listener);
-    SSL_CTX_free(ctx);
+    pthread_t thread_http, thread_https;
+    // 创建http线程和https线程
+    if (pthread_create(&thread_http, NULL, http_startup, NULL) != 0)
+        perror("http pthread_create failed");
+    if (pthread_create(&thread_https, NULL, https_startup, NULL) != 0)
+        perror("https pthread_create failed");
+    while(1){}
     return 0;
 }

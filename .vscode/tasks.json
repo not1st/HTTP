@@ -16,6 +16,7 @@
                 "-lcrypto",
                 "-levent",
                 "-levent_openssl",
+                "-lpthread",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}"
             ],
