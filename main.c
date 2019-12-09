@@ -25,7 +25,6 @@
 
 #define SERVER_CRT "server.crt"
 #define SERVER_KEY "server.key"
-#define BUF_MAX 1024 * 16
 #define HTTP_SERVER_PORT 8000
 #define HTTPS_SERVER_PORT 4430
 
@@ -46,6 +45,26 @@ void handle_trace_request(struct evhttp_request *, void *);
 void handle_connect_request(struct evhttp_request *, void *);
 void handle_patch_request(struct evhttp_request *, void *);
 void handle_unknown_request(struct evhttp_request *, void *);
+
+struct table_entry
+{
+    const char *extension;
+    const char *content_type;
+} content_type_table[] = {
+    {"txt", "text/plain"},
+    {"c", "text/plain"},
+    {"h", "text/plain"},
+    {"html", "text/html"},
+    {"htm", "text/htm"},
+    {"css", "text/css"},
+    {"gif", "image/gif"},
+    {"jpg", "image/jpeg"},
+    {"jpeg", "image/jpeg"},
+    {"png", "image/png"},
+    {"pdf", "application/pdf"},
+    {"ps", "application/postscript"},
+    {NULL, NULL},
+};
 
 /* 初始化SSL */
 SSL_CTX *evssl_init(void)
@@ -101,18 +120,29 @@ void handle_get_request(struct evhttp_request *req, void *arg)
 {
     if (req == NULL)
     {
-        printf("get a null 'get' request");
+        puts("get a null 'get' request");
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
         return;
     }
-    // 解析URL参数
+    // 解析URI参数
     char *decode_uri = strdup((char *)evhttp_request_uri(req));
     struct evkeyvalq http_query;
-    if (evhttp_parse_query(decode_uri, &http_query) == -1)
+    // 请求中包含 ..
+    if (strstr(decode_uri, ".."))
     {
-        printf("evhttp_parse_query failed");
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
         free(decode_uri);
         return;
     }
+    // 参数错误
+    if (evhttp_parse_query(decode_uri, &http_query) == -1)
+    {
+        puts("evhttp_parse_query failed");
+        free(decode_uri);
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
+        return;
+    }
+    puts(decode_uri);
     free(decode_uri);
 
     // 初始化返回客户端的数据缓存
@@ -160,6 +190,16 @@ void handle_connect_request(struct evhttp_request *req, void *arg) {}
 void handle_patch_request(struct evhttp_request *req, void *arg) {}
 void handle_unknown_request(struct evhttp_request *req, void *arg) {}
 
+
+/* 404：文件未找到 */
+void not_found(struct evhttp_request *req)
+{
+    char buf[] = "HTTP/1.0 404 NOT FOUND\r\n"
+                 "Content-Type: text/html\r\n\r\n"
+                 "The resource specified is unavailable.\r\n";
+    send(client, buf, strlen(buf), 0);
+}
+
 /* 程序异常终止 */
 void error_die(const char *sc)
 {
@@ -168,7 +208,7 @@ void error_die(const char *sc)
 }
 
 /* 处理HTTP请求 */
-void http_accept_request(struct evhttp_request *req, void * arg)
+void http_accept_request(struct evhttp_request *req, void *arg)
 {
     // HTTP请求类型
     switch (evhttp_request_get_command(req))
@@ -218,9 +258,9 @@ void http_startup(void)
     http_server = evhttp_start(http_addr, HTTP_SERVER_PORT);
     if (http_server == NULL)
         error_die("http server start failed.");
-    evhttp_set_gencb(http_server, http_accept_request, NULL);   // 设置事件处理函数
-    event_dispatch();   // 循环监听
-    evhttp_free(http_server);   // 实际上不会释放，代码不会运行到这一步
+    evhttp_set_gencb(http_server, http_accept_request, NULL); // 设置事件处理函数
+    event_dispatch();                                         // 循环监听
+    evhttp_free(http_server);                                 // 实际上不会释放，代码不会运行到这一步
     return;
 }
 
@@ -238,7 +278,7 @@ void https_startup(void)
     ctx = evssl_init(); // 初始化ssl
     if (ctx == NULL)
         return;
-    evbase = event_base_new();  // 创建HTTPS线程的event_base
+    evbase = event_base_new(); // 创建HTTPS线程的event_base
     listener = evconnlistener_new_bind(evbase, https_accept_request, (void *)ctx,
                                        LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE,
                                        1024, (struct sockaddr *)&sin, sizeof(sin));
@@ -316,6 +356,8 @@ int main()
         perror("http pthread_create failed");
     if (pthread_create(&thread_https, NULL, https_startup, NULL) != 0)
         perror("https pthread_create failed");
-    while(1){}
+    while (1)
+    {
+    }
     return 0;
 }
