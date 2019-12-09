@@ -34,7 +34,8 @@
 
 SSL_CTX *evssl_init(void);
 void https_accept_request(struct evconnlistener *, int, struct sockaddr *, int, void *);
-void ssl_readcb(struct bufferevent *, void *);
+void handle_https_request(struct bufferevent *, void *);
+void handle_https_response(struct bufferevent *, void *);
 void http_accept_request(struct evhttp_request *, void *);
 char *get_content_type(char *);
 void http_startup(void);
@@ -94,7 +95,7 @@ SSL_CTX *evssl_init(void)
     return server_ctx;
 }
 
-void ssl_readcb(struct bufferevent *bev, void *arg)
+void handle_https_request(struct bufferevent *bev, void *arg)
 {
     struct evbuffer *in = bufferevent_get_input(bev);
 
@@ -103,6 +104,11 @@ void ssl_readcb(struct bufferevent *bev, void *arg)
     printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
 
     bufferevent_write_buffer(bev, in);
+}
+
+void handle_https_response(struct bufferevent *bev, void *arg)
+{
+
 }
 
 /*  */
@@ -117,7 +123,7 @@ void https_accept_request(struct evconnlistener *serv, int sock, struct sockaddr
     evbase = evconnlistener_get_base(serv);
     bev = bufferevent_openssl_socket_new(evbase, sock, client_ctx, BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_enable(bev, EV_READ);
-    bufferevent_setcb(bev, ssl_readcb, NULL, NULL, NULL);
+    bufferevent_setcb(bev, handle_https_request, handle_https_response, NULL, NULL);
 }
 
 /* 处理GET请求 */
@@ -132,6 +138,7 @@ void handle_get_request(struct evhttp_request *req, void *arg)
     // 解析URI参数
     char *decode_uri = strdup((char *)evhttp_request_uri(req)); // get uri
     struct evkeyvalq http_query;                                // get argument
+    struct evkeyval *header;
     // 请求中包含 ..
     if (strstr(decode_uri, ".."))
     {
@@ -149,11 +156,15 @@ void handle_get_request(struct evhttp_request *req, void *arg)
     }
 
     char path[512]; // 网页文件路径
-    sprintf(path, "%s%s", WEB_PATH, decode_uri);
+    sprintf(path, "%s%s", WEB_PATH, strtok(decode_uri, "?"));
     if (path[strlen(path) - 1] == '/') // 默认找路径下的index.html
         strcat(path, "index.html");
-
-    // path包含参数、需要截断
+    puts(path);
+    // 遍历输出参数
+	for (header = http_query.tqh_first; header; header = header->next.tqe_next) 
+    {
+		printf("  %s: %s\n", header->key, header->value);
+	}
 
     struct stat st, st_p;      // 获取文件
     int cgi = 0, fd = -1;      // 处理cgi程序
@@ -178,7 +189,7 @@ void handle_get_request(struct evhttp_request *req, void *arg)
         }
         // 文件所有者、用户组、其他用户有可执行权限
         if ((st.st_mode & S_IXUSR) || (st.st_mode & S_IXGRP) || (st.st_mode & S_IXOTH))
-            cgi = 1;
+            cgi = 0;
         if (!cgi) // 不需要CGI程序处理
         {
             char *type = get_content_type(path);
@@ -207,7 +218,7 @@ void handle_get_request(struct evhttp_request *req, void *arg)
                 evbuffer_free(buf);
             }
             evhttp_send_reply_end(req); // 结束分块
-            colse(fd);
+            close(fd);
         }
         else // cgi
             evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
@@ -215,30 +226,57 @@ void handle_get_request(struct evhttp_request *req, void *arg)
     free(decode_uri);
 }
 
+/* 处理POST请求 */
 void handle_post_request(struct evhttp_request *req, void *arg)
 {
     if (req == NULL)
     {
-        puts("get a null 'post' request");
+        printf("LINE %d: %s\n", __LINE__, "Get a null request");
         evhttp_send_error(req, HTTP_BADREQUEST, NULL);
         return;
     }
+    // 处理post请求数据
+    size_t post_size = evbuffer_get_length(req->input_buffer); //获取数据长度
+	if (post_size <= 0)
+	{
+        printf("LINE %d: %s\n", __LINE__, "Post message is empty");
+        evhttp_send_error(req, HTTP_BADREQUEST, "Bad Request: Message is empty!");
+		return;
+	}
+    size_t copy_len = post_size > MAX_BUF_SIZE ? MAX_BUF_SIZE : post_size;
+    char buf[MAX_BUF_SIZE] = {0};
+    printf("LINE %d: Post len:%d, Copy len:%d\n", __LINE__, post_size, copy_len);
+    memcpy(buf, evbuffer_pullup(req->input_buffer, -1), copy_len);
+    buf[post_size] = '\0';
+    // printf("LINE %d: Post message:%s\n", __LINE__, buf);
+    if(buf == NULL)
+	{
+		printf("LINE %d: %s\n", __LINE__, "Get a null msg.");
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
+		return;
+	}
+    else
+	{
+		// 可以使用json库解析需要的数据
+        printf("LINE %d: Request data:%s\n", __LINE__, buf);
+	}
 
     // 初始化返回客户端的数据缓存
-    struct evbuffer *buf = evbuffer_new();
-    if (buf == NULL)
+    struct evbuffer *buf_ret = evbuffer_new();
+    if (buf_ret == NULL)
     {
-        printf("reply buf is null.");
+        printf("LINE %d: %s\n", __LINE__, "Reply buf is null.");
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
         return;
     }
     // 分块传输
     evhttp_send_reply_start(req, HTTP_OK, "Client");
-    evbuffer_add_printf(buf, "Receive post1 request,Thanks for the request!");
-    evhttp_send_reply_chunk(req, buf);
-    evbuffer_add_printf(buf, "Receive post2 request,Thanks for the request!");
-    evhttp_send_reply_chunk(req, buf);
+    evbuffer_add_printf(buf_ret, "This is chunk1!");
+    evhttp_send_reply_chunk(req, buf_ret);
+    evbuffer_add_printf(buf_ret, "This is chunk2!");
+    evhttp_send_reply_chunk(req, buf_ret);
     evhttp_send_reply_end(req);
-    evbuffer_free(buf);
+    evbuffer_free(buf_ret);
 }
 void handle_head_request(struct evhttp_request *req, void *arg) {}
 void handle_put_request(struct evhttp_request *req, void *arg) {}
