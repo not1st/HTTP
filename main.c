@@ -33,9 +33,8 @@
 #define MAX_BUF_SIZE 1024
 
 SSL_CTX *evssl_init(void);
-void https_accept_request(struct evconnlistener *, int, struct sockaddr *, int, void *);
-void handle_https_request(struct bufferevent *, void *);
-void http_accept_request(struct evhttp_request *, void *);
+struct bufferevent* bevcb (struct event_base *, void *);
+void accept_request(struct evhttp_request *, void *);
 char *get_content_type(char *);
 void http_startup(void);
 void https_startup(void);
@@ -94,41 +93,15 @@ SSL_CTX *evssl_init(void)
     return server_ctx;
 }
 
-void handle_https_request(struct bufferevent *bev, void *arg)
+struct bufferevent* bevcb (struct event_base *base, void *arg)
 {
-    struct evbuffer *in = bufferevent_get_input(bev);
-
-    printf("DEBUG:Received %zu bytes\n", evbuffer_get_length(in));
-    printf("------ data -----\n");
-    printf("%.*s\n", (int)evbuffer_get_length(in), evbuffer_pullup(in, -1));
-
-    bufferevent_write_buffer(bev, in);
-}
-
-/*  */
-void https_accept_request(struct evconnlistener *serv, int sock, struct sockaddr *sa, int sa_len, void *arg)
-{
-    struct event_base *evbase;
-    struct bufferevent *bev;
-    SSL_CTX *server_ctx;
-    SSL *client_ctx;
-    server_ctx = (SSL_CTX *)arg;
-    client_ctx = SSL_new(server_ctx);
-    evbase = evconnlistener_get_base(serv);
-    bev = bufferevent_openssl_socket_new(evbase, sock, client_ctx, BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
-    bufferevent_enable(bev, EV_READ);
-    bufferevent_setcb(bev, handle_https_request, NULL, NULL, NULL);
+	SSL_CTX *ctx = (SSL_CTX *) arg;
+	return bufferevent_openssl_socket_new (base, -1, SSL_new(ctx), BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
 }
 
 /* 处理GET请求 */
 void handle_get_request(struct evhttp_request *req, void *arg)
 {
-    if (req == NULL)
-    {
-        puts("get a null 'get' request");
-        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
-        return;
-    }
     // 解析URI参数
     char *decode_uri = strdup((char *)evhttp_request_uri(req)); // get uri
     struct evkeyvalq http_query;                                // get argument
@@ -223,12 +196,6 @@ void handle_get_request(struct evhttp_request *req, void *arg)
 /* 处理POST请求 */
 void handle_post_request(struct evhttp_request *req, void *arg)
 {
-    if (req == NULL)
-    {
-        printf("LINE %d: %s\n", __LINE__, "Get a null request");
-        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
-        return;
-    }
     // 处理post请求数据
     size_t post_size = evbuffer_get_length(req->input_buffer); //获取数据长度
 	if (post_size <= 0)
@@ -272,20 +239,57 @@ void handle_post_request(struct evhttp_request *req, void *arg)
     evhttp_send_reply_end(req);
     evbuffer_free(buf_ret);
 }
-void handle_head_request(struct evhttp_request *req, void *arg) {}
-void handle_put_request(struct evhttp_request *req, void *arg) {}
-void handle_delete_request(struct evhttp_request *req, void *arg) {}
-void handle_options_request(struct evhttp_request *req, void *arg) {}
-void handle_trace_request(struct evhttp_request *req, void *arg) {}
-void handle_connect_request(struct evhttp_request *req, void *arg) {}
-void handle_patch_request(struct evhttp_request *req, void *arg) {}
-void handle_unknown_request(struct evhttp_request *req, void *arg) {}
 
-/* 处理HTTP请求 */
-void http_accept_request(struct evhttp_request *req, void *arg)
+void handle_head_request(struct evhttp_request *req, void *arg)
 {
-    // HTTP请求类型
-    switch (evhttp_request_get_command(req))
+    evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+}
+
+void handle_put_request(struct evhttp_request *req, void *arg)
+{
+    evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+}
+
+void handle_delete_request(struct evhttp_request *req, void *arg)
+{
+    evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+}
+
+void handle_options_request(struct evhttp_request *req, void *arg)
+{
+    evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+}
+
+void handle_trace_request(struct evhttp_request *req, void *arg)
+{
+    evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+}
+
+void handle_connect_request(struct evhttp_request *req, void *arg)
+{
+    evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+}
+
+void handle_patch_request(struct evhttp_request *req, void *arg)
+{
+    evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+}
+
+void handle_unknown_request(struct evhttp_request *req, void *arg)
+{
+    evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+}
+
+/* 处理客户端请求 */
+void accept_request(struct evhttp_request *req, void *arg)
+{
+    if (req == NULL)
+    {
+        printf("LINE %d: %s\n", __LINE__, "Get a null request");
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
+        return;
+    }
+    switch (evhttp_request_get_command(req))    // 请求类型
     {
     case EVHTTP_REQ_GET:
         handle_get_request(req, arg);
@@ -337,44 +341,58 @@ char *get_content_type(char *path)
 /* 启动HTTP线程 */
 void http_startup(void)
 {
-    struct evhttp *http_server = NULL;
-    char *http_addr = "0.0.0.0";
-
-    // 初始化
-    event_init();
-    // 启动http服务端
-    http_server = evhttp_start(http_addr, HTTP_SERVER_PORT);
-    if (http_server == NULL)
+    struct event_base *evbase = event_init();   // 初始化evbase
+    if(evbase == NULL)
     {
-        perror("http server start failed.");
+        printf("LINE %d: %s\n", __LINE__, "HTTP evbase create failed");
         return;
     }
-    evhttp_set_gencb(http_server, http_accept_request, NULL); // 设置事件处理函数
-    event_dispatch();                                         // 循环监听
-    evhttp_free(http_server);                                 // 实际上不会释放，代码不会运行到这一步
+
+    char *http_addr = "0.0.0.0";
+    struct evhttp *http_server = evhttp_start(http_addr, HTTP_SERVER_PORT);    // 启动http服务端
+    if (http_server == NULL)
+    {
+        printf("LINE %d: %s\n", __LINE__, "HTTP evhttp create failed");
+        return;
+    }
+    evhttp_set_gencb(http_server, accept_request, NULL);   // 设置事件处理函数
+    event_dispatch();   // 循环监听
+    evhttp_free(http_server);
     return;
 }
 
 /* 启动HTTPS线程 */
 void https_startup(void)
 {
-    SSL_CTX *ctx;
-    struct evconnlistener *listener;
-    struct event_base *evbase;
-    struct sockaddr_in sin;
-    memset(&sin, 0, sizeof(sin));
-    sin.sin_family = AF_INET;
-    sin.sin_port = htons(HTTPS_SERVER_PORT);
-    sin.sin_addr.s_addr = INADDR_ANY;
-    ctx = evssl_init(); // 初始化ssl
+    SSL_CTX *ctx = evssl_init(); // 初始化ssl
     if (ctx == NULL)
+    {
+        printf("LINE %d: %s\n", __LINE__, "SSL init failed");
         return;
-    evbase = event_base_new(); // 创建HTTPS线程的event_base
-    listener = evconnlistener_new_bind(evbase, https_accept_request, (void *)ctx,
-                                       LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE,
-                                       1024, (struct sockaddr *)&sin, sizeof(sin));
-    event_base_loop(evbase, 0);
-    evconnlistener_free(listener);
+    }
+    /*
+    * event_base_new()
+    * event_init() 是否多线程共享
+    */
+    struct event_base *evbase = event_init();   // 创建HTTPS线程的event_base
+    if(evbase == NULL)
+    {
+        printf("LINE %d: %s\n", __LINE__, "HTTPS evbase create failed");
+        return;
+    }
+
+    char *https_addr = "0.0.0.0";
+    struct evhttp *https_server = evhttp_start(https_addr, HTTPS_SERVER_PORT);   // 创建evhttp以处理请求  
+    if(https_server == NULL)
+    {
+        printf("LINE %d: %s\n", __LINE__, "HTTPS evhttp create failed");
+        return;
+    }
+    evhttp_set_bevcb (https_server, bevcb, ctx);    // magic
+
+    evhttp_set_gencb(https_server, accept_request, NULL);  // 设置事件处理函数
+    event_dispatch();   // 循环监听
+    evhttp_free(https_server);
     SSL_CTX_free(ctx);
     return;
 }
@@ -384,10 +402,15 @@ int main()
     pthread_t thread_http, thread_https;
     // 创建http线程和https线程
     if (pthread_create(&thread_http, NULL, http_startup, NULL) != 0)
-        perror("http pthread_create failed");
+    {
+        printf("LINE %d: %s\n", __LINE__, "HTTP pthread_create failed");
+        return;
+    }
     if (pthread_create(&thread_https, NULL, https_startup, NULL) != 0)
-        perror("https pthread_create failed");
-    // 可加菜单
+    {
+        printf("LINE %d: %s\n", __LINE__, "HTTPS pthread_create failed");
+        return;
+    }
     while (1)
     {
     }
