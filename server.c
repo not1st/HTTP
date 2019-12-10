@@ -112,7 +112,7 @@ void serve_file(struct evhttp_request *req, const char *path)
     }
     else
     {
-        if (S_ISDIR(st.st_mode)) // 若rul是目录，自动添加index.html
+        if (S_ISDIR(st.st_mode)) // 若path是目录，自动添加index.html
         {
             strcat(path, "/index.html");
             if (stat(path, &st_p) == -1)
