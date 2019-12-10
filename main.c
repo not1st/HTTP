@@ -38,6 +38,7 @@ void accept_request(struct evhttp_request *, void *);
 char *get_content_type(char *);
 void http_startup(void);
 void https_startup(void);
+void serve_file(struct evhttp_request *, const char *);
 void handle_get_request(struct evhttp_request *, void *);
 void handle_post_request(struct evhttp_request *, void *);
 void handle_head_request(struct evhttp_request *, void *);
@@ -99,46 +100,14 @@ struct bufferevent* bevcb (struct event_base *base, void *arg)
 	return bufferevent_openssl_socket_new (base, -1, SSL_new(ctx), BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
 }
 
-/* 处理GET请求 */
-void handle_get_request(struct evhttp_request *req, void *arg)
+/* 返回网页文件 */
+void serve_file(struct evhttp_request *req, const char *path)
 {
-    // 解析URI参数
-    char *decode_uri = strdup((char *)evhttp_request_uri(req)); // get uri
-    struct evkeyvalq http_query;                                // get argument
-    struct evkeyval *header;
-    // 请求中包含 ..
-    if (strstr(decode_uri, ".."))
-    {
-        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
-        free(decode_uri);
-        return;
-    }
-    // 参数错误
-    if (evhttp_parse_query(decode_uri, &http_query) == -1)
-    {
-        puts("evhttp_parse_query failed");
-        free(decode_uri);
-        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
-        return;
-    }
-
-    char path[512]; // 网页文件路径
-    sprintf(path, "%s%s", WEB_PATH, strtok(decode_uri, "?"));
-    if (path[strlen(path) - 1] == '/') // 默认找路径下的index.html
-        strcat(path, "index.html");
-    puts(path);
-    // 遍历输出参数
-	for (header = http_query.tqh_first; header; header = header->next.tqe_next) 
-    {
-		printf("  %s: %s\n", header->key, header->value);
-	}
-
     struct stat st, st_p;      // 获取文件
-    int cgi = 0, fd = -1;      // 处理cgi程序
     if (stat(path, &st) == -1) // 请求文件不存在
     {
-        evhttp_send_error(req, HTTP_BADREQUEST, "Not Found"); // 文件未找到
-        free(decode_uri);
+        printf("LINE %d: %s%s\n", __LINE__, path, "-file not found");
+        evhttp_send_error(req, HTTP_NOTFOUND, NULL); // 文件未找到
         return;
     }
     else
@@ -148,48 +117,79 @@ void handle_get_request(struct evhttp_request *req, void *arg)
             strcat(path, "/index.html");
             if (stat(path, &st_p) == -1)
             {
+                printf("LINE %d: %s%s\n", __LINE__, path, "-file not found");
                 evhttp_send_error(req, HTTP_NOTFOUND, NULL); // 文件未找到
-                free(decode_uri);
                 return;
             }
             st = st_p;
         }
-        // 文件所有者、用户组、其他用户有可执行权限
-        if ((st.st_mode & S_IXUSR) || (st.st_mode & S_IXGRP) || (st.st_mode & S_IXOTH))
-            cgi = 0;
-        if (!cgi) // 不需要CGI程序处理
+
+        int fd = -1;
+        char *type = get_content_type(path);    // 获取文件类型
+        if ((fd = open(path, O_RDONLY)) < 0 || fstat(fd, &st) < 0)
         {
-            char *type = get_content_type(path);
-            if ((fd = open(path, O_RDONLY)) < 0 || fstat(fd, &st) < 0)
-            {
-                perror("open | fstat");
-                evhttp_send_error(req, HTTP_NOTFOUND, NULL); // 文档打开失败
-                close(fd);
-                free(decode_uri);
-                return;
-            }
-            // 添加响应头信息
-            evhttp_add_header(evhttp_request_get_output_headers(req), "Content-Type", type);
-            struct evbuffer *buf = NULL;    // 初始化返回客户端的数据缓存
-            ev_off_t offset = 0;
-            size_t bytes_left = 0, bytes_to_read = 0;
-            evhttp_send_reply_start(req, HTTP_OK, "OK");    // 分块传输
-            while (offset < st.st_size)
-            {
-                buf = evbuffer_new();
-                bytes_left = st.st_size - offset;
-                bytes_to_read = bytes_left > MAX_BUF_SIZE ? MAX_BUF_SIZE : bytes_left;
-                evbuffer_add_file(buf, fd, offset, bytes_to_read);
-                evhttp_send_reply_chunk(req, buf);
-                offset += bytes_to_read;
-                evbuffer_free(buf);
-            }
-            evhttp_send_reply_end(req); // 结束分块
+            printf("LINE %d: %s\n", __LINE__, "Open | fstat failed.");
+            evhttp_send_error(req, HTTP_NOTFOUND, NULL); // 文档打开失败
             close(fd);
+            return;
         }
-        else // cgi
-            evhttp_send_error(req, HTTP_NOTIMPLEMENTED, NULL);
+        // 添加响应头信息
+        evhttp_add_header(evhttp_request_get_output_headers(req), "Content-Type", type);
+        struct evbuffer *buf = NULL;    // 初始化返回客户端的数据缓存
+        ev_off_t offset = 0;
+        size_t bytes_left = 0, bytes_to_read = 0;
+        evhttp_send_reply_start(req, HTTP_OK, "OK");    // 分块传输
+        while (offset < st.st_size)
+        {
+            buf = evbuffer_new();
+            bytes_left = st.st_size - offset;
+            bytes_to_read = bytes_left > MAX_BUF_SIZE ? MAX_BUF_SIZE : bytes_left;
+            evbuffer_add_file(buf, fd, offset, bytes_to_read);
+            evhttp_send_reply_chunk(req, buf);
+            offset += bytes_to_read;
+            evbuffer_free(buf);
+        }
+        evhttp_send_reply_end(req); // 结束分块
+        close(fd);
     }
+}
+
+/* 处理GET请求 */
+void handle_get_request(struct evhttp_request *req, void *arg)
+{
+    // 解析URI参数
+    char *decode_uri = strdup((char *)evhttp_request_uri(req)); // get url
+    struct evkeyvalq http_query;                                // get argument
+    // 请求中包含 ..
+    if (strstr(decode_uri, ".."))
+    {
+        printf("LINE %d: %s\n", __LINE__, "Get a request include '..'.");
+        evhttp_send_error(req, HTTP_BADREQUEST, "Are You Hacking Me?");
+        free(decode_uri);
+        return;
+    }
+    // 参数错误
+    if (evhttp_parse_query(decode_uri, &http_query) == -1)
+    {
+        printf("LINE %d: %s\n", __LINE__, "Get request parm failed");
+        free(decode_uri);
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
+        return;
+    }
+
+    char path[512];
+    sprintf(path, "%s%s", WEB_PATH, strtok(decode_uri, "?"));   // 网页文件路径
+    if (path[strlen(path) - 1] == '/') // 默认找路径下的index.html
+        strcat(path, "index.html");
+    
+    // 遍历输出参数
+    struct evkeyval *header;
+	for (header = http_query.tqh_first; header; header = header->next.tqe_next) 
+    {
+		printf("  %s: %s\n", header->key, header->value);
+	}
+
+    serve_file(req, path);  // 向客户端返回数据
     free(decode_uri);
 }
 
@@ -324,6 +324,7 @@ void accept_request(struct evhttp_request *req, void *arg)
     }
 }
 
+/* 获取文件类型 */
 char *get_content_type(char *path)
 {
     char *ext, *ret = strrchr(path, '.');
