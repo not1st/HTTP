@@ -114,7 +114,7 @@
    ```
 
    在 VS Code 中设置 tasks.json 即可。
-   ![设置 GCC 编译选项](C:\Users\84603\AppData\Roaming\Typora\typora-user-images\image-20191211000817715.png)
+   ![设置 GCC 编译选项](https://github.com/not1st/HTTP/blob/master/images/image-20191211000817715.png)
 
 
 
