@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <evhttp.h>
-#include <event.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -14,13 +13,10 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 
-#include "event2/http.h"
 #include "event2/event.h"
 #include "event2/buffer.h"
 #include "event2/bufferevent.h"
 #include "event2/bufferevent_compat.h"
-#include "event2/http_struct.h"
-#include "event2/http_compat.h"
 #include "event2/util.h"
 #include "event2/listener.h"
 #include "event2/bufferevent_ssl.h"
@@ -38,6 +34,8 @@ void accept_request(struct evhttp_request *, void *);
 char *get_content_type(char *);
 void http_startup(void);
 void https_startup(void);
+void file_upload(struct evhttp_request *, void *);
+void file_download(struct evhttp_request *, void *);
 void serve_file(struct evhttp_request *, const char *);
 void handle_get_request(struct evhttp_request *, void *);
 void handle_post_request(struct evhttp_request *, void *);
@@ -130,7 +128,6 @@ void serve_file(struct evhttp_request *req, const char *path)
         {
             printf("LINE %d: %s\n", __LINE__, "Open | fstat failed.");
             evhttp_send_error(req, HTTP_NOTFOUND, NULL); // 文档打开失败
-            close(fd);
             return;
         }
         // 添加响应头信息
@@ -157,6 +154,7 @@ void serve_file(struct evhttp_request *req, const char *path)
 /* 处理GET请求 */
 void handle_get_request(struct evhttp_request *req, void *arg)
 {
+    printf("LINE %d: %s\n", __LINE__, "Get a 'get' request");
     // 解析URI参数
     char *decode_uri = strdup((char *)evhttp_request_uri(req)); // get url
     struct evkeyvalq http_query;                                // get argument
@@ -206,7 +204,7 @@ void handle_post_request(struct evhttp_request *req, void *arg)
 	}
     size_t copy_len = post_size > MAX_BUF_SIZE ? MAX_BUF_SIZE : post_size;
     char buf[MAX_BUF_SIZE] = {0};
-    printf("LINE %d: Post len:%d, Copy len:%d\n", __LINE__, post_size, copy_len);
+    printf("LINE %d: Post len:%d, Copy len:%ld\n", __LINE__, post_size, copy_len);
     memcpy(buf, evbuffer_pullup(req->input_buffer, -1), copy_len);
     buf[post_size] = '\0';
     // printf("LINE %d: Post message:%s\n", __LINE__, buf);
@@ -238,6 +236,77 @@ void handle_post_request(struct evhttp_request *req, void *arg)
     evhttp_send_reply_chunk(req, buf_ret);
     evhttp_send_reply_end(req);
     evbuffer_free(buf_ret);
+}
+
+/* 文件上传 */
+void file_upload(struct evhttp_request *req, void *arg)
+{
+    // 处理post请求数据
+    size_t post_size = evbuffer_get_length(req->input_buffer); //获取数据长度
+	if (post_size <= 0)
+	{
+        printf("LINE %d: %s\n", __LINE__, "Post message is empty");
+        evhttp_send_error(req, HTTP_BADREQUEST, "Bad Request: Message is empty!");
+		return;
+	}
+    printf("LINE %d: Get a upload file, len:%d\n", __LINE__, post_size);
+
+    // 读buf & 写入文件
+    size_t copy_len = post_size > MAX_BUF_SIZE ? MAX_BUF_SIZE : post_size;
+    char buf[MAX_BUF_SIZE] = {0};
+    memcpy(buf, evbuffer_pullup(req->input_buffer, -1), copy_len);
+    buf[copy_len] = '\0';
+    // printf("LINE %d: Post message:%s\n", __LINE__, buf);
+    if(buf == NULL)
+	{
+		printf("LINE %d: %s\n", __LINE__, "Get a null msg.");
+        evhttp_send_error(req, HTTP_BADREQUEST, NULL);
+		return;
+	}
+    else
+	{
+        // 获取文件名
+        char filename[512] = {'\0'};
+        int fn_i = strlen(buf) - strlen(strstr(buf, "filename=\""));
+        for(int i = 0; buf[fn_i + 10 + i] != '"'; i++)
+        {
+            filename[i] = buf[fn_i + 10 + i];
+        }
+        printf("LINE %d: %s\n", __LINE__, filename);
+
+		// 处理数据
+        int head_len = 46, tail_len = 44, data_i = 0;
+        char *token = strtok(buf, "\n");
+        
+        for(int i = 0; i < 3; i++)
+        {
+            token = strtok(NULL, "\n");
+            head_len += strlen(token);
+        }
+        for(int j = head_len - 1; data_i < post_size - head_len - tail_len; j++, data_i++)
+        {
+            buf[data_i] = buf[j];
+        }
+        buf[data_i] = '\0';
+
+        printf("LINE %d: Request data:%s\n", __LINE__, buf);
+        char path[512];
+        sprintf(path, "upload/%s", filename);
+        printf("LINE %d: %s\n", __LINE__, path);
+        FILE *fp = fopen(path, "w");
+        fwrite(buf, sizeof(char), sizeof(char)*data_i, fp);
+        fclose(fp);
+	}
+    // 返回数据
+    struct evbuffer *buf_ret = evbuffer_new();
+    evbuffer_add_printf(buf_ret, "upload successful");
+    evhttp_send_reply(req, HTTP_OK, "OK", buf_ret);
+}
+
+/* 文件下载 */
+void file_download(struct evhttp_request *req, void *arg)
+{
+    serve_file(req, "doc/test.txt");  // 向客户端返回数据
 }
 
 void handle_head_request(struct evhttp_request *req, void *arg)
@@ -356,6 +425,8 @@ void http_startup(void)
         printf("LINE %d: %s\n", __LINE__, "HTTP evhttp create failed");
         return;
     }
+    evhttp_set_cb(http_server,"/upload.do", file_upload, NULL);
+    evhttp_set_cb(http_server,"/download.do", file_download, NULL);
     evhttp_set_gencb(http_server, accept_request, NULL);   // 设置事件处理函数
     event_dispatch();   // 循环监听
     evhttp_free(http_server);

@@ -10,6 +10,14 @@
         "ssl.h": "c",
         "event.h": "c",
         "bufferevent_ssl.h": "c",
-        "type_traits": "cpp"
+        "type_traits": "cpp",
+        "evhttp.h": "c",
+        "http.h": "c",
+        "http_struct.h": "c",
+        "buffer.h": "c",
+        "bufferevent.h": "c",
+        "bufferevent_compat.h": "c",
+        "listener.h": "c",
+        "util.h": "c"
     }
 }
