@@ -18,6 +18,7 @@
         "bufferevent.h": "c",
         "bufferevent_compat.h": "c",
         "listener.h": "c",
-        "util.h": "c"
+        "util.h": "c",
+        "cjson.h": "c"
     }
 }

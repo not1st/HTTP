@@ -12,7 +12,9 @@
         <div>
             <form id="form1" method="post">
                 <div>
-                    <label for="fileToUpload">You can test upload files in this module:</label><br><br>
+                    <label for="fileToUpload">
+                        <h4>You can test upload files in this module:</h4>
+                    </label>
                     <input type="file" name="fileToUpload" id="fileToUpload" onchange="fileSelected();">
                     <input type="button" onclick="uploadFile()" value="上传">
                 </div>
@@ -22,12 +24,23 @@
                 <div id="progressNumber"></div>
             </form>
         </div>
+        <br />
         <hr />
         <div>
             <div>
-                You can test download files in this module:<br />
-                <br />There is a file <a href="download.do" download="test.txt">test.txt</a> here, you can download it by clicking the hyperlink.
+                <h4>You can test download files in this module:</h4>
+                There is a file <a href="download.do" download="test.txt">test.txt</a> here, you can download it by
+                clicking the hyperlink.
             </div>
+        </div>
+        <br />
+        <hr />
+        <div>
+            <h4>You can test execute CGI in this module:</h4>
+            <b>[Factorization]</b> please input a number:
+            <input type="number" min="1" id="in_num" />
+            <input type="button" id="fa_submit" value="分解" onclick="factor()" />
+            <div id="factor_result"></div>
         </div>
         <script>
             function fileSelected() {
@@ -54,6 +67,18 @@
                 xhr.addEventListener("abort", uploadCanceled, false);
                 xhr.open("POST", "upload.do");
                 xhr.send(fd);
+            }
+
+            function factor() {
+                var httpRequest = new XMLHttpRequest();
+                httpRequest.open('POST', '/factor.do', true);
+                httpRequest.setRequestHeader("Content-type", "application/json");
+                httpRequest.send(JSON.stringify({ num: document.getElementById("in_num").value }));
+                httpRequest.onreadystatechange = function() {
+                    if (httpRequest.readyState == 4 && httpRequest.status == 200) {
+                        document.getElementById('factor_result').innerHTML = httpRequest.responseText;
+                    }
+                };
             }
 
             function uploadProgress(evt) {

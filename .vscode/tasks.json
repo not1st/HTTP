@@ -17,6 +17,8 @@
                 "-levent",
                 "-levent_openssl",
                 "-lpthread",
+                "-lcjson",
+                "-lm",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}"
             ],
