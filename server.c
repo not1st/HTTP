@@ -157,9 +157,9 @@ void serve_file(struct evhttp_request *req, char *path)
 /* 处理GET请求 */
 void handle_get_request(struct evhttp_request *req, void *arg)
 {
-    printf("LINE %d: %s\n", __LINE__, "Get a 'get' request");
     // 解析URI参数
     char *decode_uri = strdup((char *)evhttp_request_uri(req)); // get url
+    printf("LINE %d: %s%s\n", __LINE__, "Get a 'get' request:", decode_uri);
     struct evkeyvalq http_query;                                // get argument
     // 请求中包含 ..
     if (strstr(decode_uri, ".."))
