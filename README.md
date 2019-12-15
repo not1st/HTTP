@@ -166,7 +166,7 @@
 &emsp;&emsp;文件上传&下载为服务器基础功能之一，我们在实现Post/Get方法的基础上实现了单个文件的上传&下载。系统提供了客户端测试页面进行各种模块的测试，在该页面可选择系统文件进行上传，下图展示了从系统选择test.txt文件并上传到upload目录下的过程：
 
 
- ![上传功能展示](file:///C:/Users/84603/AppData/Local/Temp/msohtmlclip1/01/clip_image002.jpg)
+ ![上传功能展示](https://github.com/not1st/HTTP/blob/master/images/clip_image002.jpg)
 
  
 
